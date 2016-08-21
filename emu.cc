@@ -1,4 +1,4 @@
-#include <iostream>
+#include <stdint.h>
 #include <vector>
 
 typedef uint8_t u8;
@@ -6,31 +6,19 @@ typedef uint16_t u16;
 
 struct Gameboy {
     Gameboy()
-        : A(),  F(), B(), C(),
-          D(),  E(), H(), L(),
+        : A(), F(), B(), C(),
+          D(), E(), H(), L(),
           SP(), PC(),
           ZF(), NF(), HF(), CF(),
           ram(0x10000) {}
 
-    // 8 General purpose CPU
-    // registers
-    u8  A, F;
-    u8  B, C;
-    u8  D, E;
-    u8  H, L;
+    u8 A, F, B, C, D, E, H, L; // General purpose CPU registers
+    u16 SP, PC; // Stack pointer and program counter
+    bool ZF, NF, HF, CF; // CPU Flags
+    std::vector<u8> ram; // Ram persistence
 
-    // Stack pointer and program
-    // counter
-    u16 SP, PC;
-
-    // CPU Flags
-    bool ZF, NF, HF, CF;
-
-    // Ram persistence
-    std::vector<u8> ram;
-
-    void execIns();
-    void incCycle(unsigned);
+    void execIns(); // Execute a single instruction
+    void incCycle(unsigned); // Add to the clock ticks
 };
 
 Gameboy gameboy;
@@ -38,13 +26,16 @@ Gameboy gameboy;
 void
 Gameboy::incCycle(unsigned cycles)
 {
+    (void) cycles;
 }
 
 void
 Gameboy::execIns()
 {
+    // Get the next opcode
     const u8 ins = ram[PC++];
 
+    // fyl hates me for this :<
     #define t(opcode, action, sleep) \
         case (opcode): action; \
         incCycle(sleep); break
@@ -58,15 +49,15 @@ Gameboy::execIns()
     const u16 DE = ((u16)D << 8) | E;
     const u16 HL = ((u16)H << 8) | L;
 
-    // calculate the two byte intermediate value.
-    const auto get16 = [this]{
-        u16 lower = ram[PC++];
-        u16 upper = ram[PC++];
-        return upper << 8 | lower;
-    };
-
     // get the nex parameter in the instruction
     const auto get8 = [this]{ return ram[PC++]; };
+
+    // calculate the two byte immediate value
+    const auto get16 = [this, get8]{
+        u16 lower = get8();
+        u16 upper = get8();
+        return upper << 8 | lower;
+    };
 
     switch (ins) {
     // LD register, value
