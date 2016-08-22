@@ -12,6 +12,8 @@ using i16 = int16_t;
 // instructions easily on register pairs
 struct Regpair
 {
+    // Emulate the regpair by shifting reg1
+    // and reg2 together
     Regpair(u8& reg1, u8& reg2) : reg1(reg1), reg2(reg2)
     {
         reg = ((u16)reg1 << 8) | reg2;
@@ -118,6 +120,9 @@ struct Gameboy
 
 Gameboy gameboy;
 
+// Safetely turn the unsigned byte in to
+// a signed byte without any compiler or
+// OS magic
 i8
 toSigned8(u8 byte)
 {
@@ -161,13 +166,16 @@ Gameboy::execIns()
         return upper << 8 | lower;
     };
 
+    // Adds a signed 8 bit parameter to the
+    // stack pointer while setting the carry flag
+    // and half carry flag. This also resets the
+    // zero and subtract flag.
     const auto Addi8toSP = [this, get8]() -> u16
     {
-        u8 ub8 = get8();
-        i8 b8 = toSigned8(ub8);
-        u16 op = SP + b8;
-        F.Z = 0;
-        F.N = 0;
+        const u8 ub8 = get8();
+        const i8 b8 = toSigned8(ub8);
+        const u16 op = SP + b8;
+        F.Z = 0; F.N = 0;
         F.CY = (u16)((u8)SP) + ub8 > 0xff;
         F.H = (SP & 0x0f) + (ub8 & 0x0f) >= 0x10;
 
@@ -175,6 +183,9 @@ Gameboy::execIns()
     };
 
     /* == 8-bit ALU OPERATIONS */
+    // Add another byte to register A
+    // Flag in this case could potentially be
+    // a carry flag
     const auto Add = [&](u8 other, u8 flag = 0) -> void
     {
         F.Z = !(A + other + flag);
@@ -184,6 +195,9 @@ Gameboy::execIns()
         A += other + flag;
     };
 
+    // Subtract another byte to register A
+    // Flag in this case could potentially be
+    // a carry flag
     const auto Sub = [&](u8 other, u8 flag = 0) -> void
     {
         F.Z = !(A - (other + flag));
@@ -193,6 +207,10 @@ Gameboy::execIns()
         A -= other + flag;
     };
 
+    // Logical AND other byte with A.
+    // Set the zero flag accordingly, subtract
+    // and carry flag are reset, half carry
+    // flag is set to 1.
     const auto And = [&](u8 other) -> void
     {
         A &= other;
@@ -200,6 +218,9 @@ Gameboy::execIns()
         F.N = 0; F.H = 1; F.CY = 0;
     };
 
+    // Logical OR other byte with A.
+    // Set the zero flag accordingly, subtract,
+    // half carry flag and carry flag are reset
     const auto Or = [&](u8 other) -> void
     {
         A |= other;
@@ -207,6 +228,9 @@ Gameboy::execIns()
         F.N = 0; F.H = 0; F.CY = 0;
     };
 
+    // Logical XOR other byte with A.
+    // Set the zero flag accordingly, subtract,
+    // half carry flag and carry flag are reset
     const auto Xor = [&](u8 other) -> void
     {
         A ^= other;
@@ -214,6 +238,12 @@ Gameboy::execIns()
         F.N = 0; F.H = 0; F.CY = 0;
     };
 
+    // Compare other byte with A
+    // Set the zero flag accordingly set the
+    // subtract flag to 1, set the carry flag if
+    // the other byte is greater than A, set the
+    // half carry flag if the lower nibble is less
+    // than or equal to the lower nibble of A.
     const auto CP = [&](u8 other) -> void
     {
         F.Z = A == other;
@@ -222,6 +252,10 @@ Gameboy::execIns()
         F.CY = other > A;
     };
 
+    // Increment register.
+    // Set the zero flag accordingly, reset the half
+    // carry flag, set the half carry flag if we get
+    // a carry from the lower nibble of the register
     const auto INC = [&](u8& reg) -> void
     {
         F.Z = !(reg + 1);
@@ -229,6 +263,10 @@ Gameboy::execIns()
         F.H = (reg & 0x0f) >= 0xf;
     };
 
+    // Decrement register.
+    // Set the zero flag accordingly, set the subtract
+    // flag to 1, set the half carry flag if we get a borrow
+    // from the lower nibble of the register
     const auto DEC = [&](u8& reg) -> void
     {
         F.Z = !(reg - 1);
@@ -237,6 +275,9 @@ Gameboy::execIns()
     };
 
     /* 16-bit ALU OPERATIONS */
+    // Same as the 8-bit ADD operation, except
+    // combining 2 16-bit register pairs, not
+    // 2 8-bit registers.
     const auto ADD16 = [&](Regpair& reg1, u16 reg2) -> void
     {
         F.N = 0;
@@ -245,6 +286,9 @@ Gameboy::execIns()
         reg1 += reg2;
     };
 
+    // Swap the upper and lower nibble of the register
+    // Set the zero flag accordingly, reset all other
+    // flags
     const auto SWAP = [&](u8& reg) -> void
     {
         reg = (reg >> 4 | reg << 4);
