@@ -554,11 +554,11 @@ Gameboy::execIns()
     // Rotate register A left. Old bit 7 to carry flag. Reset
     // subtract flag and half carry flag, set zero flag to 0
     // if result is 0. Carry flag contains old bit 7 data.
-    t(0x07, F.N = 0; F.H = 0; A = ((A >> 7) | (A << 1)); F.Z = !(A); F.C = (A & 0b1), 4);
+    t(0x07, F.N = 0; F.H = 0; A = ((A >> 7) | (A << 1)); F.Z = !(A); F.CY = (A & 0b1), 4);
     // RLA
     // Rotate A left through carry flag.
     t(0x17, F.N = 0; F.H = 0; {bool tmp = (A >> 7);
-        A = ((A >> 7) | F.C); F.Z = !(A); F.C = tmp; }, 4);
+        A = ((A >> 7) | F.CY); F.Z = !(A); F.CY = tmp; }, 4);
     }
 
     // Now parse the CB table, the Gameboy CPU has
