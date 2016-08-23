@@ -1,5 +1,6 @@
-#include <stdint.h>
-#include <vector>
+#include <assert.h> // assert()
+#include <stdint.h> // [u]int[\d]_t
+#include <vector>   // std::vector<>
 
 using u8  = uint8_t;
 using u16 = uint16_t;
@@ -12,7 +13,7 @@ using i16 = int16_t;
 // instructions easily on register pairs
 struct Regpair
 {
-    // Emulate the regpair by shifting reg1
+    // Emulate the regpair by combining reg1
     // and reg2 together
     Regpair(u8& reg1, u8& reg2) : reg1(reg1), reg2(reg2)
     {
@@ -286,6 +287,7 @@ Gameboy::execIns()
         reg1 += reg2;
     };
 
+    /* MISC ALU OPERATIONS */
     // Swap the upper and lower nibble of the register
     // Set the zero flag accordingly, reset all other
     // flags
@@ -294,6 +296,124 @@ Gameboy::execIns()
         reg = (reg >> 4 | reg << 4);
         F.Z = !(reg);
         F.N = 0; F.H = 0; F.CY = 0;
+    };
+
+    // Rotate val left. Old bit 7 to carry flag. Reset
+    // subtract flag and half carry flag, set zero flag to 0
+    // if result is 0. Carry flag contains old bit 7 data.
+    // If `carry` is specified, then we carry the bit through
+    // the carry flag
+    const auto RLEFT = [&](u8& val, bool carry = false) -> void
+    {
+        bool tmp = (val >> 7);
+        F.N = 0; F.H = 0;
+
+        if (carry) {
+            val = ((val >> 7) | F.CY);
+            F.CY = tmp;
+        } else {
+            val = ((val >> 7) | (val << 1));
+            F.CY = (val & 0b1);
+        }
+
+        F.Z = !(val);
+    };
+
+    // Rotate val right. Old bit 0 to carry flag. Reset
+    // subtract flag and half carry flag, set zero flag to 0
+    // if result is 0. Carry flag contains old bit 0 data.
+    // If `carry` is specified, then we carry the bit through
+    // the carry flag
+    const auto RRIGHT = [&](u8& val, bool carry = false) -> void
+    {
+        bool tmp = (val & 0b00000001); // Get the 0th bit
+        F.N = 0; F.H = 0;
+
+        if (carry) {
+            // Shift val over 1 bit, move F.CY over to the 7th bit
+            val = ((val >> 1) | (F.CY << 7));
+            F.CY = tmp;
+        } else {
+            F.CY = (val & 0b1);
+            val = ((val >> 1) | (val << 7));
+        }
+
+        F.Z = !(val);
+    };
+
+    // Shift val left into carry.
+    // Set LSB (bit 0) to 0
+    const auto SLEFT = [&](u8& val)
+    {
+        F.N = 0; F.H = 0;
+
+        F.CY = (val >> 7); // set carry flag to old 7th bit
+        val = (val << 1); // shift left once
+
+        F.Z = !(val);
+    };
+
+    // Shift val right into carry.
+    // MSB does not change if msb is true,
+    // otherwise msb is set to 0
+    const auto SRIGHT = [&](u8& val, bool msb = true)
+    {
+        F.N = 0; F.H = 0;
+
+        F.CY = (val & 0b1);
+        val = ((val >> 1) | ((msb ? (val & 0b10000000) : 0b0)));
+
+        F.Z = !(val);
+    };
+
+    // Test bit in register
+    // Set zero flag if bit of register is 0
+    // Reset subtract flag, set half carry flag
+    const auto BIT = [&](u8& reg)
+    {
+        const u8 bit = get8();
+        assert(bit < 8);
+
+        F.N = 0; F.H = 1;
+        F.Z = !(reg & (1 << bit));
+    };
+
+    // Set bit in register
+    const auto SETBIT = [&](u8& reg, bool reset = false)
+    {
+        const u8 bit = get8();
+        assert(bit < 8);
+
+        if (reset)
+            reg &= ~(1 << bit);
+        else
+            reg |= (1 << bit);
+    };
+
+    // CALL two byte immediate value
+    // Push address of next instruction on to stack
+    // and then jump to address nn
+    const auto CALL = [&](bool exec = true)
+    {
+        const u16 addr = get16();
+
+        if (!exec)
+            return;
+
+        ram[--SP] = (u8)(PC >> 8);
+        ram[--SP] = (u8)PC;
+        PC = addr;
+    };
+
+    // RET
+    // Pop two bytes from the stack and jump
+    // to that address
+    const auto RET = [&]
+    {
+        const u8 lower = ram[SP++];
+        const u8 upper = ram[SP++];
+
+        PC = ((upper << 8) | lower);
     };
 
     // Get the next opcode
@@ -594,15 +714,77 @@ Gameboy::execIns()
     // Enable interrups but not immediatly. Interrupts are
     // enabled after instruction after EI is executed.
     t(0xfb, , 4);
-    // RLCA
-    // Rotate register A left. Old bit 7 to carry flag. Reset
-    // subtract flag and half carry flag, set zero flag to 0
-    // if result is 0. Carry flag contains old bit 7 data.
-    t(0x07, F.N = 0; F.H = 0; A = ((A >> 7) | (A << 1)); F.Z = !(A); F.CY = (A & 0b1), 4);
-    // RLA
-    // Rotate A left through carry flag.
-    t(0x17, F.N = 0; F.H = 0; {bool tmp = (A >> 7);
-        A = ((A >> 7) | F.CY); F.Z = !(A); F.CY = tmp; }, 4);
+    // RLCA : TODO :
+    t(0x07, RLEFT(A), 4); // Rotate register A left
+    // RLA : TODO :
+    t(0x17, RLEFT(A, true), 4); // Rotate register A left through carry flag.
+    // RRCA : TODO :
+    // Rotate A right, old bit 0 to carry flag. Reset
+    // subtract and half carry flag, set zero flag to 1
+    // if result is 0, carry flag contains old bit 0 data.
+    t(0x0f, RRIGHT(A), 4); // Rotate register A right
+    // RRA : TODO :
+    t(0x1f, RRIGHT(A, true), 4); // Rotate A right through carry flag, same as above
+    // JP nn
+    // Jump to address nn
+    // Use nn as two byte immediate value, LS byte first
+    t(0xc3, PC = get16(), 12); // Jump to address nn
+    // JP condition, address
+    // Jump to the address (2 byte immediate value) if
+    // the condition is met. Note: we must consume the
+    // argument reguardless. We do it this way so we
+    // don't need to write curely braces.
+    t(0xc2, !(F.Z) ? PC = get16() : get16(), 12); // Jump if zero flag is reset
+    t(0xca,  (F.Z) ? PC = get16() : get16(), 12); // Jump if zero flag is set
+    t(0xd2, !(F.CY)? PC = get16() : get16(), 12); // Jump if carry flag is reset
+    t(0xda,  (F.CY)? PC = get16() : get16(), 12); // Jump if carry flag is set
+    // JP *HL
+    // Jump to the address contained in HL
+    t(0xe9, PC = ram[HL], 4); // Jump to *HL
+    // JR n
+    // Add one byte signed immediate value to
+    // our current address and jump to it
+    t(0x18, PC += toSigned8(get8()), 8);
+    // JR condition, one byte signed immediate value
+    // If the condition is true, then add one byte
+    // signed immediate value to the current address
+    // and jump to it
+    t(0x20, !(F.Z) ? PC += toSigned8(get8()) : get8(), 8); // Jump if zero flag is reset
+    t(0x28,  (F.Z) ? PC += toSigned8(get8()) : get8(), 8); // Jump if zero flag is set
+    t(0x30, !(F.CY)? PC += toSigned8(get8()) : get8(), 8); // Jump if carry flag is reset
+    t(0x38,  (F.CY)? PC += toSigned8(get8()) : get8(), 8); // Jump if carry flag is set
+    // CALL two byte immediate value
+    t(0xcd, CALL(), 12);
+    // CALL condition, two byte immediate value
+    // Only CALL if the condition is met
+    t(0xc4, CALL(!(F.Z) ), 12); // Call if zero flag is reset
+    t(0xcc, CALL( (F.Z) ), 12); // Call if zero flag is set
+    t(0xd4, CALL(!(F.CY)), 12); // Call if carry flag is reset
+    t(0xdc, CALL( (F.CY)), 12); // Call if carry flag is set
+    // RST n
+    // Push present address onto stack.
+    // Jump to address specified
+    t(0xc7, ram[--SP] = (u8)(PC >> 8); ram[--SP] = (u8)PC; PC = 0x00, 32);
+    t(0xcf, ram[--SP] = (u8)(PC >> 8); ram[--SP] = (u8)PC; PC = 0x08, 32);
+    t(0xd7, ram[--SP] = (u8)(PC >> 8); ram[--SP] = (u8)PC; PC = 0x10, 32);
+    t(0xdf, ram[--SP] = (u8)(PC >> 8); ram[--SP] = (u8)PC; PC = 0x18, 32);
+    t(0xe7, ram[--SP] = (u8)(PC >> 8); ram[--SP] = (u8)PC; PC = 0x20, 32);
+    t(0xef, ram[--SP] = (u8)(PC >> 8); ram[--SP] = (u8)PC; PC = 0x28, 32);
+    t(0xf7, ram[--SP] = (u8)(PC >> 8); ram[--SP] = (u8)PC; PC = 0x30, 32);
+    t(0xff, ram[--SP] = (u8)(PC >> 8); ram[--SP] = (u8)PC; PC = 0x38, 32);
+    // RET
+    // Pop two bytes from stack and jump to that address
+    t(0xc9, RET(), 8);
+    // RET cc
+    // RET if the condition is true
+    t(0xc0, if (!(F.Z)) RET(), 8); // Return if zero flag is reset
+    t(0xc8, if ( (F.Z)) RET(), 8); // Return if zero flag is set
+    t(0xd0, if (!(F.CY))RET(), 8); // Return if carry flag is reset
+    t(0xd8, if ( (F.CY))RET(), 8); // Return if carry flag is set
+    // RETI
+    // Pop two bytes from stack and jump to that address
+    // then enable interrupts
+    t(0xd9, RET(); /* enable interrupt */, 8);
     }
 
     // Now parse the CB table, the Gameboy CPU has
@@ -619,6 +801,110 @@ Gameboy::execIns()
         t(0x34, SWAP(H), 8); // Swap nibbles of H
         t(0x35, SWAP(L), 8); // Swap nibbles of L
         t(0x36, SWAP(ram[HL]), 16); // Swap nibbles of *HL
+        // RLC n
+        // Rotate n left
+        t(0x07, RLEFT(A), 8); // Rotate register A left
+        t(0x00, RLEFT(B), 8); // Rotate register B left
+        t(0x01, RLEFT(C), 8); // Rotate register C left
+        t(0x02, RLEFT(D), 8); // Rotate register D left
+        t(0x03, RLEFT(E), 8); // Rotate register E left
+        t(0x04, RLEFT(H), 8); // Rotate register H left
+        t(0x05, RLEFT(L), 8); // Rotate register L left
+        t(0x06, RLEFT(ram[HL]), 16); // Rotate *HL left
+        // RL n
+        // Rotate n left through carry flag.
+        t(0x17, RLEFT(A, true), 8); // Rotate register A left through carry flag
+        t(0x10, RLEFT(B, true), 8); // Rotate register B left through carry flag
+        t(0x11, RLEFT(C, true), 8); // Rotate register C left through carry flag
+        t(0x12, RLEFT(D, true), 8); // Rotate register D left through carry flag
+        t(0x13, RLEFT(E, true), 8); // Rotate register E left through carry flag
+        t(0x14, RLEFT(H, true), 8); // Rotate register H left through carry flag
+        t(0x15, RLEFT(L, true), 8); // Rotate register L left through carry flag
+        t(0x16, RLEFT(ram[HL], true), 16); // Rotate *HL left through carry flag
+        // RRC n
+        // Rotate n right
+        t(0x0f, RRIGHT(A), 8); // Rotate register A right
+        t(0x08, RRIGHT(B), 8); // Rotate register B right
+        t(0x09, RRIGHT(C), 8); // Rotate register C right
+        t(0x0a, RRIGHT(D), 8); // Rotate register D right
+        t(0x0b, RRIGHT(E), 8); // Rotate register E right
+        t(0x0c, RRIGHT(H), 8); // Rotate register H right
+        t(0x0d, RRIGHT(L), 8); // Rotate register L right
+        t(0x0e, RRIGHT(ram[HL]), 16); // Rotate *HL right
+        // RR n
+        // Rotate n right through carry flag
+        t(0x1f, RRIGHT(A, true), 8); // Rotate register A right through carry flag
+        t(0x18, RRIGHT(B, true), 8); // Rotate register B right through carry flag
+        t(0x19, RRIGHT(C, true), 8); // Rotate register C right through carry flag
+        t(0x1a, RRIGHT(D, true), 8); // Rotate register D right through carry flag
+        t(0x1b, RRIGHT(E, true), 8); // Rotate register E right through carry flag
+        t(0x1c, RRIGHT(H, true), 8); // Rotate register H right through carry flag
+        t(0x1d, RRIGHT(L, true), 8); // Rotate register L right through carry flag
+        t(0x1e, RRIGHT(ram[HL], true), 16); // Rotate *HL right through carry flag
+        // SLA n
+        // Shift n left into carry, set bit 0 to 0
+        t(0x27, SLEFT(A), 8); // Shift register A left
+        t(0x20, SLEFT(B), 8); // Shift register B left
+        t(0x21, SLEFT(C), 8); // Shift register C left
+        t(0x22, SLEFT(D), 8); // Shift register D left
+        t(0x23, SLEFT(E), 8); // Shift register E left
+        t(0x24, SLEFT(H), 8); // Shift register H left
+        t(0x25, SLEFT(L), 8); // Shift register L left
+        t(0x26, SLEFT(ram[HL]), 16); // Shift *HL left
+        // SRA n
+        // Shift n right into carry. MSB doesn't change
+        t(0x2f, SRIGHT(A), 8); // Shift register A right
+        t(0x28, SRIGHT(B), 8); // Shift register B right
+        t(0x29, SRIGHT(C), 8); // Shift register C right
+        t(0x2a, SRIGHT(D), 8); // Shift register D right
+        t(0x2b, SRIGHT(E), 8); // Shift register E right
+        t(0x2c, SRIGHT(H), 8); // Shift register H right
+        t(0x2d, SRIGHT(L), 8); // Shift register L right
+        t(0x2e, SRIGHT(ram[HL]), 16); // Shift *HL right
+        // SRL n
+        // Shift n right into carry. MSB set to 0
+        // Set the second parameter of SRIGHT to false to
+        // set the most significant bit (MSB) to 0
+        t(0x3f, SRIGHT(A, false), 8); // Shift register A right, set MSB to 0
+        t(0x38, SRIGHT(B, false), 8); // Shift register B right, set MSB to 0
+        t(0x39, SRIGHT(C, false), 8); // Shift register C right, set MSB to 0
+        t(0x3a, SRIGHT(D, false), 8); // Shift register D right, set MSB to 0
+        t(0x3b, SRIGHT(E, false), 8); // Shift register E right, set MSB to 0
+        t(0x3c, SRIGHT(H, false), 8); // Shift register H right, set MSB to 0
+        t(0x3d, SRIGHT(L, false), 8); // Shift register L right, set MSB to 0
+        t(0x3e, SRIGHT(ram[HL], false), 16); // Shift *HL right, set MSB to 0
+        // BIT 0-7, register
+        // Test bit in register
+        t(0x47, BIT(A), 8); // Test bit in register A
+        t(0x40, BIT(B), 8); // Test bit in register B
+        t(0x41, BIT(C), 8); // Test bit in register C
+        t(0x42, BIT(D), 8); // Test bit in register D
+        t(0x43, BIT(E), 8); // Test bit in register E
+        t(0x44, BIT(H), 8); // Test bit in register H
+        t(0x45, BIT(L), 8); // Test bit in register L
+        t(0x46, BIT(ram[HL]), 16); // Test bit in *HL
+        // SET 0-7, register
+        // Set bit in register
+        t(0xc7, SETBIT(A), 8); // Set bit in register A
+        t(0xc0, SETBIT(B), 8); // Set bit in register B
+        t(0xc1, SETBIT(C), 8); // Set bit in register C
+        t(0xc2, SETBIT(D), 8); // Set bit in register D
+        t(0xc3, SETBIT(E), 8); // Set bit in register E
+        t(0xc4, SETBIT(H), 8); // Set bit in register H
+        t(0xc5, SETBIT(L), 8); // Set bit in register L
+        t(0xc6, SETBIT(ram[HL]), 16); // Set bit in *HL
+        // RES 0-7, register
+        // Reset bit in register
+        // Set the second parameter of SETBIT to true to
+        // reset the bit
+        t(0x87, SETBIT(A, true), 8); // Reset bit in register A
+        t(0x80, SETBIT(B, true), 8); // Reset bit in register B
+        t(0x81, SETBIT(C, true), 8); // Reset bit in register C
+        t(0x82, SETBIT(D, true), 8); // Reset bit in register D
+        t(0x83, SETBIT(E, true), 8); // Reset bit in register E
+        t(0x84, SETBIT(H, true), 8); // Reset bit in register H
+        t(0x85, SETBIT(L, true), 8); // Reset bit in register L
+        t(0x86, SETBIT(ram[HL], true), 16); // Reset bit in *HL
         }
     }
 
