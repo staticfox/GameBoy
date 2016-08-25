@@ -12,6 +12,145 @@ using u32 = uint32_t;
 using i8  = int8_t;
 using i16 = int16_t;
 
+enum struct CART_TYPE {
+    UNKNOWN = -1,
+    ROMONLY,
+    MBC1,
+    MBC2,
+    MBC3,
+    MBC4,
+    MBC5,
+    MBC6,
+    MBC7
+};
+
+#define PICNIC(message) do { std::cerr << __LINE__ << " " << \
+    __FUNCTION__ << " :" message << std::endl; abort(); } while(0)
+
+struct Memory;
+
+struct Cartridge
+{
+    std::vector<u8> rom;
+    std::vector<u8> ram;
+    u16 rompos;
+    u16 rampos;
+    CART_TYPE type;
+    bool ram_enabled;
+
+    void store(u16 address, u8 value);
+    void store5(u16 address, u8 value);
+    u8   load(u16 address);
+    u8   load5(u16 address);
+};
+
+void
+Cartridge::store(u16 address, u8 value)
+{
+    switch(type) {
+    case CART_TYPE::MBC5:
+        store5(address, value); break;
+    default:
+        abort(); // nope
+    }
+}
+
+u8
+Cartridge::load(u16 address)
+{
+    switch(type) {
+    case CART_TYPE::MBC5:
+        return load5(address);
+    default:
+        abort(); // nope
+    }
+}
+
+void
+Cartridge::store5(u16 address, u8 value)
+{
+    if (address >= 0x0000 && address < 0x2000) {
+        ram_enabled = ((value & 0b00001111) == 0x0a); // RAM Enable
+        if (!ram_enabled) {
+            // TODO: STORE IN A FILE
+        }
+    } else if (address >= 0x2000 && address < 0x3000)
+        rompos = ((rompos & 0x0100) | (value & 0x00ff)); // ROM Bank Number
+    else if (address >= 0x3000 && address < 0x4000)
+        // High bit of ROM Bank Number
+        rompos = ((rompos & 0x00ff) | (((u16)value << 8) & 0x0100));
+    else if (address >= 0x4000 && address < 0x6000)
+        rampos = (value & 0x0f); // RAM Bank Number
+    else if (address >= 0xa000 && address < 0xc000)
+        ram[0x2000 * rampos + address - 0xa000] = value;
+    else
+        PICNIC("Tried to write to an invalid address! " << value);
+}
+
+u8
+Cartridge::load5(u16 address)
+{
+    if (address >= 0x0000 && address < 0x4000)
+        return rom[address];
+    else if (address >= 0x4000 && address < 0x8000)
+        return rom[0x4000 * rompos + address - 0x4000];
+    else if (address >= 0xa000 && address < 0xc000)
+        return ram[0x2000 * rampos + address - 0xa000];
+    else
+        PICNIC("Tried to load from an invalid address! " << address);
+}
+
+struct MemoryElementProxy
+{
+    MemoryElementProxy(const u16 address, Memory& memory)
+        : address(address), memory(memory){}
+
+    // This is the implementation of setting
+    void operator=(u8 value);
+
+    // This is the implmentation of getting
+    operator u8() const;
+
+private:
+    u16 address;
+    Memory& memory;
+};
+
+struct Memory
+{
+    friend MemoryElementProxy;
+
+    Memory(Cartridge& cartridge)
+        : memory(0x10000), cartridge(cartridge){}
+
+    MemoryElementProxy operator[](u16 address)
+    {
+        return MemoryElementProxy(address, *this);
+    }
+
+private:
+    std::vector<u8> memory;
+    Cartridge& cartridge;
+};
+
+// This is the implementation of setting
+void
+MemoryElementProxy::operator=(u8 value)
+{
+    if ((address >= 0x0000 && address < 0x8000) || (address >= 0xa000 && address < 0xc000))
+        memory.cartridge.store(address, value);
+    else
+        memory.memory[address] = value;
+}
+
+MemoryElementProxy::operator u8() const
+{
+    if ((address >= 0x0000 && address < 0x8000) || (address >= 0xa000 && address < 0xc000))
+        return memory.cartridge.load(address);
+    else
+        return memory.memory[address];
+}
+
 // special struct in order to perform
 // instructions easily on register pairs
 struct Regpair
@@ -74,7 +213,7 @@ struct Gameboy
 {
     Gameboy()
         : A(), B(), C(), D(), E(), H(), L(),
-          SP(), PC(), F(), ram(0x10000) {}
+          SP(), PC(), F(), ram(cartridge) {}
 
     u8 A, B, C, D, E, H, L; // General purpose CPU registers
     u16 SP, PC; // Stack pointer and program counter
@@ -116,20 +255,22 @@ struct Gameboy
         u8 LF; // Emulating the lower 4 bits of the F register
     } F;
 
-    std::vector<u8> ram; // Ram persistence
-    std::vector<u8> cartridge;
+    Cartridge cartridge; // cartridge cartridge cartridge
+    Memory ram; // Ram persistence
 
     void execIns(); // Execute a single instruction
     void incCycle(unsigned); // Add to the clock ticks
     void loadROM(const char *); // Load ROM in to memory
-    void printCartridgeTable(const u8); // Print memory cartridge information
-    u8 getRomTable(const u8); // Get ROM information
-    u8 getRamTable(const u8); // Get RAM information
+    CART_TYPE getCartridgeTable(const u8); // Print memory cartridge information
+    u16 getRomTable(const u8); // Get ROM information
+    u8  getRamTable(const u8); // Get RAM information
 };
 
 void
 Gameboy::loadROM(const char *const filename)
 {
+    auto& rom = this->cartridge.rom;
+
     // Nintendo logo
     static constexpr u8 logo[] = {
         0xce, 0xed, 0x66, 0x66, 0xcc, 0x0d, 0x00, 0x0b, 0x03,
@@ -141,21 +282,21 @@ Gameboy::loadROM(const char *const filename)
     };
 
     {
-        std::ifstream rom(filename);
-        rom.seekg(0, std::ios::end);
-        const std::size_t rom_size = rom.tellg();
-        rom.seekg(0, std::ios::beg);
-        this->cartridge.resize(rom_size);
-        rom.read(reinterpret_cast<char *>(this->cartridge.data()), rom_size);
+        std::ifstream romfile(filename);
+        romfile.seekg(0, std::ios::end);
+        const std::size_t rom_size = romfile.tellg();
+        romfile.seekg(0, std::ios::beg);
+        rom.resize(rom_size);
+        romfile.read(reinterpret_cast<char *>(rom.data()), rom_size);
     }
 
-    if (memcmp(&this->cartridge[0x0104], logo, 48) != 0) {
+    if (memcmp(&rom[0x0104], logo, 48) != 0) {
         std::cout << "Invalid ROM detected, terminating." << std::endl;
         std::exit(EXIT_FAILURE);
     }
 
     char buf[16];
-    memcpy(buf, &this->cartridge[0x134], 16);
+    memcpy(buf, &rom[0x134], 16);
 
     std::cout << "\n@@@@@@@@@@@@@@@@@@@@\n";
     std::cout << "@  " << buf << "  @" << std::endl;
@@ -165,33 +306,43 @@ Gameboy::loadROM(const char *const filename)
 
     // If the MSB of 0x0143 is 1, then the
     // color flag is turned on
-    if ((this->cartridge[0x134] >> 7)) {
+    if ((rom[0x134] >> 7)) {
         std::cout << " Color";
-        if (this->cartridge[0x134] == 0xc0)
+        if (rom[0x134] == 0xc0)
             std:: cout << " (ONLY)";
     }
     std::cout << " (";
-    std::cout << "0x" << std::hex << (unsigned)this->cartridge[0x134] << ")" << std::endl;
+    std::cout << "0x" << std::hex << (unsigned)rom[0x134] << ")" << std::endl;
 
-    printCartridgeTable(this->cartridge[0x0147]);
-    const u8 bankCount = getRomTable(this->cartridge[0x0148]);
-    const u8 ramSize   = getRamTable(this->cartridge[0x0149]);
+    const CART_TYPE cartType  = getCartridgeTable(rom[0x0147]);
+
+    if (cartType == CART_TYPE::UNKNOWN)
+        PICNIC("ERROR: Unknown Cartridge Type.");
+
+    this->cartridge.type = cartType;
+    const u16 bankCount = getRomTable(rom[0x0148]);
+    std::size_t mb = bankCount * 0x4000;
+    if (mb != rom.size())
+        PICNIC("ERROR: ROM Size does not match file size.");
+
+    const u8 ramSize   = getRamTable(rom[0x0149]);
+    this->cartridge.ram.resize(ramSize * 1024);
 
     std::cout << "Destination Code: ";
-    if (this->cartridge[0x014a] == 0x00)
+    if (rom[0x014a] == 0x00)
         std::cout << "Japanese";
     else
         std::cout << "Non-Japanese";
-    std::cout << " (0x" << std::hex << (unsigned)this->cartridge[0x014a] << ")" << std::endl;
+    std::cout << " (0x" << std::hex << (unsigned)rom[0x014a] << ")" << std::endl;
 
-    std::cout << "ROM Version: 0x" << std::hex << (unsigned)this->cartridge[0x14c] << std::endl;
+    std::cout << "ROM Version: 0x" << std::hex << (unsigned)rom[0x14c] << std::endl;
 
     std::cout << "Checksum: ";
-    const u8 checksumbyte = this->cartridge[0x14d];
+    const u8 checksumbyte = rom[0x14d];
 
     u8 x = 0;
     for (std::size_t i = 0x0134; i < 0x014d; ++i)
-        x -= (this->cartridge[i] + 1);
+        x -= (rom[i] + 1);
 
     if (x != checksumbyte) {
         std::cout << "Failed";
@@ -202,41 +353,61 @@ Gameboy::loadROM(const char *const filename)
     std::cout << std::endl;
 }
 
-void
-Gameboy::printCartridgeTable(const u8 value)
+CART_TYPE
+Gameboy::getCartridgeTable(const u8 value)
 {
     std::cout << "Cartridge Type: ";
-    #define t(type) std::cout << type; break;
+    #define t(type, size) std::cout << type <<      \
+        " (0x" << std::hex << (unsigned)((u8)value) \
+        << ")" << std::endl; return size;
+
     switch(value) {
-    case 0x00: t("ROM ONLY")                case 0x15: t("MBC4")
-    case 0x01: t("MBC1")                    case 0x16: t("MBC4+RAM")
-    case 0x02: t("MBC1+RAM")                case 0x17: t("MBC4+RAM+BATTERY")
-    case 0x03: t("MBC1+RAM+BATTERY")        case 0x19: t("MBC5")
-    case 0x05: t("MBC2")                    case 0x1A: t("MBC5+RAM")
-    case 0x06: t("MBC2+BATTERY")            case 0x1B: t("MBC5+RAM+BATTERY")
-    case 0x08: t("ROM+RAM")                 case 0x1C: t("MBC5+RUMBLE")
-    case 0x09: t("ROM+RAM+BATTERY")         case 0x1D: t("MBC5+RUMBLE+RAM")
-    case 0x0B: t("MMM01")                   case 0x1E: t("MBC5+RUMBLE+RAM+BATTERY")
-    case 0x0C: t("MMM01+RAM")               case 0x20: t("MBC6")
-    case 0x0D: t("MMM01+RAM+BATTERY")       case 0x22: t("MBC7+SENSOR+RUMBLE+RAM+BATTERY")
-    case 0x0F: t("MBC3+TIMER+BATTERY")
-    case 0x10: t("MBC3+TIMER+RAM+BATTERY")  case 0xFC: t("POCKET CAMERA")
-    case 0x11: t("MBC3")                    case 0xFD: t("BANDAI TAMA5")
-    case 0x12: t("MBC3+RAM")                case 0xFE: t("HuC3")
-    case 0x13: t("MBC3+RAM+BATTERY")        case 0xFF: t("HuC1+RAM+BATTERY")
-    default: t("UNKNOWN")
+    case 0x00: t("ROM ONLY", CART_TYPE::ROMONLY)
+    case 0x01: t("MBC1"    , CART_TYPE::MBC1)
+    case 0x02: t("MBC1+RAM", CART_TYPE::MBC1)
+    case 0x03: t("MBC1+RAM+BATTERY", CART_TYPE::MBC1)
+    case 0x05: t("MBC2"    , CART_TYPE::MBC2)
+    case 0x06: t("MBC2+BATTERY", CART_TYPE::MBC2)
+    case 0x08: t("ROM+RAM", CART_TYPE::ROMONLY)
+    case 0x09: t("ROM+RAM+BATTERY", CART_TYPE::ROMONLY)
+    case 0x0B: t("MMM01", CART_TYPE::ROMONLY)
+    case 0x0C: t("MMM01+RAM", CART_TYPE::ROMONLY)
+    case 0x0D: t("MMM01+RAM+BATTERY", CART_TYPE::ROMONLY)
+    case 0x0F: t("MBC3+TIMER+BATTERY", CART_TYPE::MBC3)
+    case 0x10: t("MBC3+TIMER+RAM+BATTERY", CART_TYPE::MBC3)
+    case 0x11: t("MBC3", CART_TYPE::MBC3)
+    case 0x12: t("MBC3+RAM", CART_TYPE::MBC3)
+    case 0x13: t("MBC3+RAM+BATTERY", CART_TYPE::MBC3)
+    case 0x15: t("MBC4", CART_TYPE::MBC4)
+    case 0x16: t("MBC4+RAM", CART_TYPE::MBC4)
+    case 0x17: t("MBC4+RAM+BATTERY", CART_TYPE::MBC4)
+    case 0x19: t("MBC5", CART_TYPE::MBC5)
+    case 0x1A: t("MBC5+RAM", CART_TYPE::MBC5)
+    case 0x1B: t("MBC5+RAM+BATTERY", CART_TYPE::MBC5)
+    case 0x1C: t("MBC5+RUMBLE", CART_TYPE::MBC5)
+    case 0x1D: t("MBC5+RUMBLE+RAM", CART_TYPE::MBC5)
+    case 0x1E: t("MBC5+RUMBLE+RAM+BATTERY", CART_TYPE::MBC5)
+    case 0x20: t("MBC6", CART_TYPE::MBC6)
+    case 0x22: t("MBC7+SENSOR+RUMBLE+RAM+BATTERY", CART_TYPE::MBC7)
+    case 0xFC: t("POCKET CAMERA", CART_TYPE::ROMONLY)
+    case 0xFD: t("BANDAI TAMA5", CART_TYPE::ROMONLY)
+    case 0xFE: t("HuC3", CART_TYPE::ROMONLY)
+    case 0xFF: t("HuC1+RAM+BATTERY", CART_TYPE::ROMONLY)
+    default: t("UNKNOWN", CART_TYPE::UNKNOWN)
     }
     std::cout << " (0x" << std::hex << (unsigned)value << ")" << std::endl;
     #undef t
+
+    return CART_TYPE::UNKNOWN;
 }
 
-u8
+u16
 Gameboy::getRomTable(const u8 value)
 {
     std::cout << "ROM Size: ";
-    #define t(type, size) std::cout << type <<         \
+    #define t(type, size) std::cout << type <<      \
         " (0x" << std::hex << (unsigned)((u8)value) \
-        << ")" << std::endl; break; return size;
+        << ")" << std::endl; return size;
 
     switch(value) {
     case 0x00: t("32KByte (no ROM banking)", 0)
@@ -262,7 +433,7 @@ Gameboy::getRamTable(const u8 value)
     std::cout << "RAM Size: ";
     #define t(type, size) std::cout << type <<         \
         " (0x" << std::hex << (unsigned)((u8)value) \
-        << ")" << std::endl; break; return size;
+        << ")" << std::endl; return size;
 
     switch(value) {
     case 0x00: t("None",     0)
@@ -413,7 +584,7 @@ Gameboy::execIns()
     // Set the zero flag accordingly, reset the half
     // carry flag, set the half carry flag if we get
     // a carry from the lower nibble of the register
-    const auto INC = [&](u8& reg) -> void
+    const auto INC = [&](auto&& reg) -> void
     {
         F.Z = !(reg + 1);
         F.N = 0;
@@ -424,7 +595,7 @@ Gameboy::execIns()
     // Set the zero flag accordingly, set the subtract
     // flag to 1, set the half carry flag if we get a borrow
     // from the lower nibble of the register
-    const auto DEC = [&](u8& reg) -> void
+    const auto DEC = [&](auto&& reg) -> void
     {
         F.Z = !(reg - 1);
         F.N = 1;
@@ -447,7 +618,7 @@ Gameboy::execIns()
     // Swap the upper and lower nibble of the register
     // Set the zero flag accordingly, reset all other
     // flags
-    const auto SWAP = [&](u8& reg) -> void
+    const auto SWAP = [&](auto&& reg) -> void
     {
         reg = (reg >> 4 | reg << 4);
         F.Z = !(reg);
@@ -459,7 +630,7 @@ Gameboy::execIns()
     // if result is 0. Carry flag contains old bit 7 data.
     // If `carry` is specified, then we carry the bit through
     // the carry flag
-    const auto RLEFT = [&](u8& val, bool carry = false) -> void
+    const auto RLEFT = [&](auto&& val, bool carry = false)
     {
         bool tmp = (val >> 7);
         F.N = 0; F.H = 0;
@@ -480,7 +651,7 @@ Gameboy::execIns()
     // if result is 0. Carry flag contains old bit 0 data.
     // If `carry` is specified, then we carry the bit through
     // the carry flag
-    const auto RRIGHT = [&](u8& val, bool carry = false) -> void
+    const auto RRIGHT = [&](auto&& val, bool carry = false) -> void
     {
         bool tmp = (val & 0b00000001); // Get the 0th bit
         F.N = 0; F.H = 0;
@@ -499,7 +670,7 @@ Gameboy::execIns()
 
     // Shift val left into carry.
     // Set LSB (bit 0) to 0
-    const auto SLEFT = [&](u8& val)
+    const auto SLEFT = [&](auto&& val)
     {
         F.N = 0; F.H = 0;
 
@@ -512,7 +683,7 @@ Gameboy::execIns()
     // Shift val right into carry.
     // MSB does not change if msb is true,
     // otherwise msb is set to 0
-    const auto SRIGHT = [&](u8& val, bool msb = true)
+    const auto SRIGHT = [&](auto&& val, bool msb = true)
     {
         F.N = 0; F.H = 0;
 
@@ -525,7 +696,7 @@ Gameboy::execIns()
     // Test bit in register
     // Set zero flag if bit of register is 0
     // Reset subtract flag, set half carry flag
-    const auto BIT = [&](u8& reg)
+    const auto BIT = [&](auto&& reg)
     {
         const u8 bit = get8();
         assert(bit < 8);
@@ -535,15 +706,15 @@ Gameboy::execIns()
     };
 
     // Set bit in register
-    const auto SETBIT = [&](u8& reg, bool reset = false)
+    const auto SETBIT = [&](auto&& reg, bool reset = false)
     {
         const u8 bit = get8();
         assert(bit < 8);
 
         if (reset)
-            reg &= ~(1 << bit);
+            reg = (reg & ~(1 << bit));
         else
-            reg |= (1 << bit);
+            reg = (reg | (1 << bit));
     };
 
     // CALL two byte immediate value
@@ -870,16 +1041,16 @@ Gameboy::execIns()
     // Enable interrups but not immediatly. Interrupts are
     // enabled after instruction after EI is executed.
     t(0xfb, , 4);
-    // RLCA : TODO :
+    // RLCA
     t(0x07, RLEFT(A), 4); // Rotate register A left
-    // RLA : TODO :
+    // RLA
     t(0x17, RLEFT(A, true), 4); // Rotate register A left through carry flag.
-    // RRCA : TODO :
+    // RRCA
     // Rotate A right, old bit 0 to carry flag. Reset
     // subtract and half carry flag, set zero flag to 1
     // if result is 0, carry flag contains old bit 0 data.
     t(0x0f, RRIGHT(A), 4); // Rotate register A right
-    // RRA : TODO :
+    // RRA
     t(0x1f, RRIGHT(A, true), 4); // Rotate A right through carry flag, same as above
     // JP nn
     // Jump to address nn
@@ -946,7 +1117,8 @@ Gameboy::execIns()
     // Now parse the CB table, the Gameboy CPU has
     // two separate tables for instructions.
     if (ins == 0xcb) {
-        switch (ram[PC++]) {
+        const u8 ins2 = ram[PC++];
+        switch (ins2) {
         // SWAP n
         // sets the zero flag to 1 if the result is 0, reset all other flags
         t(0x37, SWAP(A), 8); // Swap nibbles of A
@@ -1061,6 +1233,9 @@ Gameboy::execIns()
         t(0x84, SETBIT(H, true), 8); // Reset bit in register H
         t(0x85, SETBIT(L, true), 8); // Reset bit in register L
         t(0x86, SETBIT(ram[HL], true), 16); // Reset bit in *HL
+        default:
+            std::cerr << "WARNING: Unknown opcode in CB table: 0x"
+                << std::hex << (unsigned)ins2 << std::endl;
         }
     }
 
