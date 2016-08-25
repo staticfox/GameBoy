@@ -1,5 +1,8 @@
 #include <assert.h> // assert()
+#include <string.h> // memcmp
 #include <stdint.h> // [u]int[\d]_t
+#include <iostream> // cout
+#include <fstream>  // fstream
 #include <vector>   // std::vector<>
 
 using u8  = uint8_t;
@@ -114,12 +117,165 @@ struct Gameboy
     } F;
 
     std::vector<u8> ram; // Ram persistence
+    std::vector<u8> cartridge;
 
     void execIns(); // Execute a single instruction
     void incCycle(unsigned); // Add to the clock ticks
+    void loadROM(const char *); // Load ROM in to memory
+    void printCartridgeTable(const u8); // Print memory cartridge information
+    u8 getRomTable(const u8); // Get ROM information
+    u8 getRamTable(const u8); // Get RAM information
 };
 
-Gameboy gameboy;
+void
+Gameboy::loadROM(const char *const filename)
+{
+    // Nintendo logo
+    static constexpr u8 logo[] = {
+        0xce, 0xed, 0x66, 0x66, 0xcc, 0x0d, 0x00, 0x0b, 0x03,
+        0x73, 0x00, 0x83, 0x00, 0x0c, 0x00, 0x0d, 0x00, 0x08,
+        0x11, 0x1f, 0x88, 0x89, 0x00, 0x0e, 0xdc, 0xcc, 0x6e,
+        0xe6, 0xdd, 0xdd, 0xd9, 0x99, 0xbb, 0xbb, 0x67, 0x63,
+        0x6e, 0x0e, 0xec, 0xcc, 0xdd, 0xdc, 0x99, 0x9f, 0xbb,
+        0xb9, 0x33, 0x3e
+    };
+
+    {
+        std::ifstream rom(filename);
+        rom.seekg(0, std::ios::end);
+        const std::size_t rom_size = rom.tellg();
+        rom.seekg(0, std::ios::beg);
+        this->cartridge.resize(rom_size);
+        rom.read(reinterpret_cast<char *>(this->cartridge.data()), rom_size);
+    }
+
+    if (memcmp(&this->cartridge[0x0104], logo, 48) != 0) {
+        std::cout << "Invalid ROM detected, terminating." << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+
+    char buf[16];
+    memcpy(buf, &this->cartridge[0x134], 16);
+
+    std::cout << "\n@@@@@@@@@@@@@@@@@@@@\n";
+    std::cout << "@  " << buf << "  @" << std::endl;
+    std::cout << "@@@@@@@@@@@@@@@@@@@@\n\n";
+
+    std::cout << "Platform: GameBoy";
+
+    // If the MSB of 0x0143 is 1, then the
+    // color flag is turned on
+    if ((this->cartridge[0x134] >> 7)) {
+        std::cout << " Color";
+        if (this->cartridge[0x134] == 0xc0)
+            std:: cout << " (ONLY)";
+    }
+    std::cout << " (";
+    std::cout << "0x" << std::hex << (unsigned)this->cartridge[0x134] << ")" << std::endl;
+
+    printCartridgeTable(this->cartridge[0x0147]);
+    const u8 bankCount = getRomTable(this->cartridge[0x0148]);
+    const u8 ramSize   = getRamTable(this->cartridge[0x0149]);
+
+    std::cout << "Destination Code: ";
+    if (this->cartridge[0x014a] == 0x00)
+        std::cout << "Japanese";
+    else
+        std::cout << "Non-Japanese";
+    std::cout << " (0x" << std::hex << (unsigned)this->cartridge[0x014a] << ")" << std::endl;
+
+    std::cout << "ROM Version: 0x" << std::hex << (unsigned)this->cartridge[0x14c] << std::endl;
+
+    std::cout << "Checksum: ";
+    const u8 checksumbyte = this->cartridge[0x14d];
+
+    u8 x = 0;
+    for (std::size_t i = 0x0134; i < 0x014d; ++i)
+        x -= (this->cartridge[i] + 1);
+
+    if (x != checksumbyte) {
+        std::cout << "Failed";
+        exit(EXIT_FAILURE);
+    } else {
+        std::cout << "Passed";
+    }
+    std::cout << std::endl;
+}
+
+void
+Gameboy::printCartridgeTable(const u8 value)
+{
+    std::cout << "Cartridge Type: ";
+    #define t(type) std::cout << type; break;
+    switch(value) {
+    case 0x00: t("ROM ONLY")                case 0x15: t("MBC4")
+    case 0x01: t("MBC1")                    case 0x16: t("MBC4+RAM")
+    case 0x02: t("MBC1+RAM")                case 0x17: t("MBC4+RAM+BATTERY")
+    case 0x03: t("MBC1+RAM+BATTERY")        case 0x19: t("MBC5")
+    case 0x05: t("MBC2")                    case 0x1A: t("MBC5+RAM")
+    case 0x06: t("MBC2+BATTERY")            case 0x1B: t("MBC5+RAM+BATTERY")
+    case 0x08: t("ROM+RAM")                 case 0x1C: t("MBC5+RUMBLE")
+    case 0x09: t("ROM+RAM+BATTERY")         case 0x1D: t("MBC5+RUMBLE+RAM")
+    case 0x0B: t("MMM01")                   case 0x1E: t("MBC5+RUMBLE+RAM+BATTERY")
+    case 0x0C: t("MMM01+RAM")               case 0x20: t("MBC6")
+    case 0x0D: t("MMM01+RAM+BATTERY")       case 0x22: t("MBC7+SENSOR+RUMBLE+RAM+BATTERY")
+    case 0x0F: t("MBC3+TIMER+BATTERY")
+    case 0x10: t("MBC3+TIMER+RAM+BATTERY")  case 0xFC: t("POCKET CAMERA")
+    case 0x11: t("MBC3")                    case 0xFD: t("BANDAI TAMA5")
+    case 0x12: t("MBC3+RAM")                case 0xFE: t("HuC3")
+    case 0x13: t("MBC3+RAM+BATTERY")        case 0xFF: t("HuC1+RAM+BATTERY")
+    default: t("UNKNOWN")
+    }
+    std::cout << " (0x" << std::hex << (unsigned)value << ")" << std::endl;
+    #undef t
+}
+
+u8
+Gameboy::getRomTable(const u8 value)
+{
+    std::cout << "ROM Size: ";
+    #define t(type, size) std::cout << type <<         \
+        " (0x" << std::hex << (unsigned)((u8)value) \
+        << ")" << std::endl; break; return size;
+
+    switch(value) {
+    case 0x00: t("32KByte (no ROM banking)", 0)
+    case 0x01: t("64KByte (4 banks)",    4)
+    case 0x02: t("128KByte (8 banks)",   8)
+    case 0x03: t("256KByte (16 banks)", 16)
+    case 0x04: t("512KByte (32 banks)", 32)
+    case 0x05: t("1MByte (64 banks) - only 63 banks used by MBC1", 64)
+    case 0x06: t("2MByte (128 banks) - only 125 banks used by MBC1", 128)
+    case 0x07: t("4MByte (256 banks)", 256)
+    case 0x52: t("1.1MByte (72 banks)", 72)
+    case 0x53: t("1.2MByte (80 banks)", 80)
+    case 0x54: t("1.5MByte (96 banks)", 96)
+    default: t("UNKNOWN", 0)
+    }
+    #undef t
+    return 0;
+}
+
+u8
+Gameboy::getRamTable(const u8 value)
+{
+    std::cout << "RAM Size: ";
+    #define t(type, size) std::cout << type <<         \
+        " (0x" << std::hex << (unsigned)((u8)value) \
+        << ")" << std::endl; break; return size;
+
+    switch(value) {
+    case 0x00: t("None",     0)
+    case 0x01: t("2 KBytes", 2)
+    case 0x02: t("8 Kbytes", 8)
+    case 0x03: t("32 KBytes (4 banks of 8KBytes each)", 32)
+    case 0x04: t("128 KBytes (16 banks of 8KBytes each)", 128)
+    case 0x05: t("64 KBytes (8 banks of 8KBytes each)", 64)
+    default: t("UNKNOWN", 0)
+    }
+    #undef t
+    return 0;
+}
 
 // Safetely turn the unsigned byte in to
 // a signed byte without any compiler or
@@ -912,7 +1068,15 @@ Gameboy::execIns()
 }
 
 int
-main(int /*argc*/, char ** /*argv*/)
+main(int argc, char ** argv)
 {
-    return 0;
+    if (argc < 2) {
+        std::cout << "USAGE: " << argv[0] << " game.gbc\n";
+        return EXIT_FAILURE;
+    }
+
+    Gameboy gameboy;
+    gameboy.loadROM(argv[1]);
+
+    return EXIT_SUCCESS;
 }
