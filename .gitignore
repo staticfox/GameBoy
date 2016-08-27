@@ -2,3 +2,4 @@ emu
 main
 *.gbc
 
+core.*
