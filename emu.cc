@@ -12,6 +12,8 @@ using u32 = uint32_t;
 using i8  = int8_t;
 using i16 = int16_t;
 
+static constexpr u32 CLOCK_HZ = 4194304;
+
 enum struct CART_TYPE {
     UNKNOWN = -1,
     ROMONLY,
@@ -211,18 +213,14 @@ private:
 
 struct Gameboy
 {
-    Gameboy()
-        : A(), B(), C(), D(), E(), H(), L(),
-          SP(), PC(), F(), ram(cartridge) {}
+    Gameboy() : ram(cartridge) {}
 
-    u8 A, B, C, D, E, H, L; // General purpose CPU registers
-    u16 SP, PC; // Stack pointer and program counter
+    u8 A=0, B=0, C=0, D=0, E=0, H=0, L=0; // General purpose CPU registers
+    u16 SP=0xfffe, PC=0x0100; // Stack pointer and program counter
 
     // F register
     struct Freg
     {
-        Freg() : Z(), N(), H(), CY(), LF() {}
-
         // Shift the flags to the first 4 bits, then put the
         // remaining unused bits from LF at the end.
         operator u8() const
@@ -251,8 +249,8 @@ struct Gameboy
             return *this;
         }
 
-        bool Z, N, H, CY; // CPU Flags
-        u8 LF; // Emulating the lower 4 bits of the F register
+        bool Z=0, N=0, H=0, CY=0; // CPU Flags
+        u8 LF=0; // Emulating the lower 4 bits of the F register
     } F;
 
     Cartridge cartridge; // cartridge cartridge cartridge
@@ -264,6 +262,13 @@ struct Gameboy
     CART_TYPE getCartridgeTable(const u8); // Print memory cartridge information
     u16 getRomTable(const u8); // Get ROM information
     u8  getRamTable(const u8); // Get RAM information
+    void runGame(); // The most useless part
+    template<typename FTYPE> auto getReg(u8, FTYPE); // Parse the register
+private:
+    bool system_halt = false; // Designates when we HALT opcode processing
+    bool IME = false; // TODO ?
+    void sendInterrupt(const u8 itype); // Set by hardware
+    void handleInterrupt(); // Handle interrupts
 };
 
 void
@@ -308,7 +313,7 @@ Gameboy::loadROM(const char *const filename)
     // color flag is turned on
     if ((rom[0x134] >> 7)) {
         std::cout << " Color";
-        if (rom[0x134] == 0xc0)
+        if (rom[0x134] == 0xc0) // Designates Color only
             std:: cout << " (ONLY)";
     }
     std::cout << " (";
@@ -389,10 +394,10 @@ Gameboy::getCartridgeTable(const u8 value)
     case 0x1E: t("MBC5+RUMBLE+RAM+BATTERY", CART_TYPE::MBC5)
     case 0x20: t("MBC6", CART_TYPE::MBC6)
     case 0x22: t("MBC7+SENSOR+RUMBLE+RAM+BATTERY", CART_TYPE::MBC7)
-    case 0xFC: t("POCKET CAMERA", CART_TYPE::ROMONLY)
-    case 0xFD: t("BANDAI TAMA5", CART_TYPE::ROMONLY)
-    case 0xFE: t("HuC3", CART_TYPE::ROMONLY)
-    case 0xFF: t("HuC1+RAM+BATTERY", CART_TYPE::ROMONLY)
+    case 0xfc: t("POCKET CAMERA", CART_TYPE::ROMONLY)
+    case 0xfd: t("BANDAI TAMA5", CART_TYPE::ROMONLY)
+    case 0xfe: t("HuC3", CART_TYPE::ROMONLY)
+    case 0xff: t("HuC1+RAM+BATTERY", CART_TYPE::ROMONLY)
     default: t("UNKNOWN", CART_TYPE::UNKNOWN)
     }
     std::cout << " (0x" << std::hex << (unsigned)value << ")" << std::endl;
@@ -463,7 +468,78 @@ toSigned8(u8 byte)
 void
 Gameboy::incCycle(unsigned cycles)
 {
-    (void) cycles;
+    static u32 s_cycles;
+    s_cycles += cycles;
+    if (s_cycles == CLOCK_HZ) {
+        // std::cout << "one second has passed" << std::endl;
+        s_cycles = 0;
+    } else if (s_cycles > CLOCK_HZ) {
+        // std::cout << "PAST ONE SECOND?? " << std::dec << (s_cycles - CLOCK_HZ) << std::endl;
+        s_cycles = 0;
+    }
+}
+
+template<typename FTYPE>
+auto Gameboy::getReg(u8 r, FTYPE f)
+{
+    Regpair HL(H, L);
+
+    // TODO Fix me so incCycle() happens
+    // after
+    switch(r) {
+    case 0b111: incCycle(8);  return f(A);
+    case 0b000: incCycle(8);  return f(B);
+    case 0b001: incCycle(8);  return f(C);
+    case 0b010: incCycle(8);  return f(D);
+    case 0b011: incCycle(8);  return f(E);
+    case 0b100: incCycle(8);  return f(H);
+    case 0b101: incCycle(8);  return f(L);
+    case 0b110: incCycle(16); return f(ram[HL]);
+    default: PICNIC("Unknown register in RES " << r);
+    }
+}
+
+void
+Gameboy::handleInterrupt()
+{
+    if (IME) {
+        const u8 IE = ram[0xffff];
+        const u8 IF = ram[0xff0f];
+
+        // Nothing to handle
+        if (IF == 0x0) { return; }
+
+        IME = false;
+        ram[--SP] = (u8)(PC >> 8);
+        ram[--SP] = (u8)PC;
+
+        if ((IF & 0b1) && (IE & 0b1)) {
+            PC = 0x0040;
+            ram[0xff0f] = (~0b1 & IF);
+        } else if ((IF & 0b10) && (IE & 0b10)) {
+            PC = 0x0048;
+            ram[0xff0f] = (~0b10 & IF);
+        } else if ((IF & 0b100) && (IE & 0b100)) {
+            PC = 0x0050;
+            ram[0xff0f] = (~0b100 & IF);
+        } else if ((IF & 0b1000) && (IE & 0b1000)) {
+            PC = 0x0058;
+            ram[0xff0f] = (~0b1000 & IF);
+        } else if ((IF & 0b10000) && (IE & 0b10000)) {
+            PC = 0x0060;
+            ram[0xff0f] = (~0b10000 & IF);
+        } else {
+            PICNIC("Received invalid IF interrupt! " << IF);
+        }
+
+        system_halt = false; // TODO Reset system halt status
+    }
+}
+
+void
+Gameboy::sendInterrupt(const u8 itype)
+{
+    ram[0xff0f] = (ram[0xff0f] | itype); // Store to IF register
 }
 
 void
@@ -514,7 +590,7 @@ Gameboy::execIns()
     // Add another byte to register A
     // Flag in this case could potentially be
     // a carry flag
-    const auto Add = [&](u8 other, u8 flag = 0) -> void
+    const auto Add = [&](u8 other, u8 flag = 0)
     {
         F.Z = !(A + other + flag);
         F.N = 0;
@@ -526,7 +602,7 @@ Gameboy::execIns()
     // Subtract another byte to register A
     // Flag in this case could potentially be
     // a carry flag
-    const auto Sub = [&](u8 other, u8 flag = 0) -> void
+    const auto Sub = [&](u8 other, u8 flag = 0)
     {
         F.Z = !(A - (other + flag));
         F.N = 1;
@@ -539,7 +615,7 @@ Gameboy::execIns()
     // Set the zero flag accordingly, subtract
     // and carry flag are reset, half carry
     // flag is set to 1.
-    const auto And = [&](u8 other) -> void
+    const auto And = [&](u8 other)
     {
         A &= other;
         F.Z = !A;
@@ -549,7 +625,7 @@ Gameboy::execIns()
     // Logical OR other byte with A.
     // Set the zero flag accordingly, subtract,
     // half carry flag and carry flag are reset
-    const auto Or = [&](u8 other) -> void
+    const auto Or = [&](u8 other)
     {
         A |= other;
         F.Z = !A;
@@ -559,7 +635,7 @@ Gameboy::execIns()
     // Logical XOR other byte with A.
     // Set the zero flag accordingly, subtract,
     // half carry flag and carry flag are reset
-    const auto Xor = [&](u8 other) -> void
+    const auto Xor = [&](u8 other)
     {
         A ^= other;
         F.Z = !A;
@@ -572,7 +648,7 @@ Gameboy::execIns()
     // the other byte is greater than A, set the
     // half carry flag if the lower nibble is less
     // than or equal to the lower nibble of A.
-    const auto CP = [&](u8 other) -> void
+    const auto CP = [&](u8 other)
     {
         F.Z = A == other;
         F.N = 1;
@@ -584,7 +660,7 @@ Gameboy::execIns()
     // Set the zero flag accordingly, reset the half
     // carry flag, set the half carry flag if we get
     // a carry from the lower nibble of the register
-    const auto INC = [&](auto&& reg) -> void
+    const auto INC = [&](auto&& reg)
     {
         F.Z = !(reg + 1);
         F.N = 0;
@@ -595,7 +671,7 @@ Gameboy::execIns()
     // Set the zero flag accordingly, set the subtract
     // flag to 1, set the half carry flag if we get a borrow
     // from the lower nibble of the register
-    const auto DEC = [&](auto&& reg) -> void
+    const auto DEC = [&](auto&& reg)
     {
         F.Z = !(reg - 1);
         F.N = 1;
@@ -606,7 +682,7 @@ Gameboy::execIns()
     // Same as the 8-bit ADD operation, except
     // combining 2 16-bit register pairs, not
     // 2 8-bit registers.
-    const auto ADD16 = [&](Regpair& reg1, u16 reg2) -> void
+    const auto ADD16 = [&](Regpair& reg1, u16 reg2)
     {
         F.N = 0;
         F.H = ((reg1 & 0xff) + (reg2 & 0xff)) > 0xff;
@@ -618,7 +694,7 @@ Gameboy::execIns()
     // Swap the upper and lower nibble of the register
     // Set the zero flag accordingly, reset all other
     // flags
-    const auto SWAP = [&](auto&& reg) -> void
+    const auto SWAP = [&](auto&& reg)
     {
         reg = (reg >> 4 | reg << 4);
         F.Z = !(reg);
@@ -651,7 +727,7 @@ Gameboy::execIns()
     // if result is 0. Carry flag contains old bit 0 data.
     // If `carry` is specified, then we carry the bit through
     // the carry flag
-    const auto RRIGHT = [&](auto&& val, bool carry = false) -> void
+    const auto RRIGHT = [&](auto&& val, bool carry = false)
     {
         bool tmp = (val & 0b00000001); // Get the 0th bit
         F.N = 0; F.H = 0;
@@ -696,9 +772,8 @@ Gameboy::execIns()
     // Test bit in register
     // Set zero flag if bit of register is 0
     // Reset subtract flag, set half carry flag
-    const auto BIT = [&](auto&& reg)
+    const auto BIT = [&](auto&& reg, const u8 bit)
     {
-        const u8 bit = get8();
         assert(bit < 8);
 
         F.N = 0; F.H = 1;
@@ -706,9 +781,8 @@ Gameboy::execIns()
     };
 
     // Set bit in register
-    const auto SETBIT = [&](auto&& reg, bool reset = false)
+    const auto SETBIT = [&](auto&& reg, u8 bit, bool reset = false)
     {
-        const u8 bit = get8();
         assert(bit < 8);
 
         if (reset)
@@ -745,6 +819,12 @@ Gameboy::execIns()
 
     // Get the next opcode
     const u8 ins = ram[PC++];
+    // std::cout << "Executing 0x" << std::hex
+    //     << (unsigned)ins << "at PC 0x" << std::hex <<
+    //     (unsigned)PC << " with next byte 0x" << std::hex <<
+    //     (unsigned)ram[PC]     << " 0x" << std::hex <<
+    //     (unsigned)ram[PC + 1] << " 0x" << std::hex <<
+    //     (unsigned)ram[PC + 2] << std::endl;
     switch (ins) {
     // LD register, value
     t(0x06, B = get8()   , 8); // store to B
@@ -1028,7 +1108,7 @@ Gameboy::execIns()
     t(0x00, /* contemplate life here */ , 4);
     // HALT
     // Power down the CPU until an interrupt occurs
-    t(0x76, /* contemplate life here */, 4);
+    t(0x76, system_halt = true, 4);
     // STOP
     // Halt CPU & CLD display until button is pressed
     // Skip over the next opcode
@@ -1036,11 +1116,11 @@ Gameboy::execIns()
     // DI
     // Disable interrups but not immediately. Interrups are
     // disabled after instruction after DI is executed.
-    t(0xf3, , 4);
+    t(0xf3, IME = false, 4);
     // EI
     // Enable interrups but not immediatly. Interrupts are
     // enabled after instruction after EI is executed.
-    t(0xfb, , 4);
+    t(0xfb, IME = true, 4);
     // RLCA
     t(0x07, RLEFT(A), 4); // Rotate register A left
     // RLA
@@ -1118,6 +1198,30 @@ Gameboy::execIns()
     // two separate tables for instructions.
     if (ins == 0xcb) {
         const u8 ins2 = ram[PC++];
+
+        // RES 0-7, register
+        // Reset bit in register
+        // Set the second parameter of SETBIT to true to
+        // reset the bit
+        if ((ins2 >> 6) == 0b10) {
+            getReg((ins2 & 0x7), [&](auto&& reg){SETBIT(reg, ((ins2 >> 3) & 0x7), 1);});
+            return;
+        }
+
+        // SET 0-7, register
+        // Set bit in register
+        if ((ins2 >> 6) == 0b11) {
+            getReg((ins2 & 0x7), [&](auto&& reg){SETBIT(reg, ((ins2 >> 3) & 0x7));});
+            return;
+        }
+
+        // BIT 0-7, register
+        // Test bit in register
+        if ((ins2 >> 6) == 0b01) {
+            getReg((ins2 & 0x7), [&](auto&& reg){BIT(reg, ((ins2 >> 3) & 0x7));});
+            return;
+        }
+
         switch (ins2) {
         // SWAP n
         // sets the zero flag to 1 if the result is 0, reset all other flags
@@ -1201,38 +1305,6 @@ Gameboy::execIns()
         t(0x3c, SRIGHT(H, false), 8); // Shift register H right, set MSB to 0
         t(0x3d, SRIGHT(L, false), 8); // Shift register L right, set MSB to 0
         t(0x3e, SRIGHT(ram[HL], false), 16); // Shift *HL right, set MSB to 0
-        // BIT 0-7, register
-        // Test bit in register
-        t(0x47, BIT(A), 8); // Test bit in register A
-        t(0x40, BIT(B), 8); // Test bit in register B
-        t(0x41, BIT(C), 8); // Test bit in register C
-        t(0x42, BIT(D), 8); // Test bit in register D
-        t(0x43, BIT(E), 8); // Test bit in register E
-        t(0x44, BIT(H), 8); // Test bit in register H
-        t(0x45, BIT(L), 8); // Test bit in register L
-        t(0x46, BIT(ram[HL]), 16); // Test bit in *HL
-        // SET 0-7, register
-        // Set bit in register
-        t(0xc7, SETBIT(A), 8); // Set bit in register A
-        t(0xc0, SETBIT(B), 8); // Set bit in register B
-        t(0xc1, SETBIT(C), 8); // Set bit in register C
-        t(0xc2, SETBIT(D), 8); // Set bit in register D
-        t(0xc3, SETBIT(E), 8); // Set bit in register E
-        t(0xc4, SETBIT(H), 8); // Set bit in register H
-        t(0xc5, SETBIT(L), 8); // Set bit in register L
-        t(0xc6, SETBIT(ram[HL]), 16); // Set bit in *HL
-        // RES 0-7, register
-        // Reset bit in register
-        // Set the second parameter of SETBIT to true to
-        // reset the bit
-        t(0x87, SETBIT(A, true), 8); // Reset bit in register A
-        t(0x80, SETBIT(B, true), 8); // Reset bit in register B
-        t(0x81, SETBIT(C, true), 8); // Reset bit in register C
-        t(0x82, SETBIT(D, true), 8); // Reset bit in register D
-        t(0x83, SETBIT(E, true), 8); // Reset bit in register E
-        t(0x84, SETBIT(H, true), 8); // Reset bit in register H
-        t(0x85, SETBIT(L, true), 8); // Reset bit in register L
-        t(0x86, SETBIT(ram[HL], true), 16); // Reset bit in *HL
         default:
             std::cerr << "WARNING: Unknown opcode in CB table: 0x"
                 << std::hex << (unsigned)ins2 << std::endl;
@@ -1240,6 +1312,15 @@ Gameboy::execIns()
     }
 
     #undef t
+}
+
+void
+Gameboy::runGame()
+{
+    for(;;) {
+        this->handleInterrupt();
+        if (!system_halt) this->execIns();
+    }
 }
 
 int
@@ -1252,6 +1333,7 @@ main(int argc, char ** argv)
 
     Gameboy gameboy;
     gameboy.loadROM(argv[1]);
+    gameboy.runGame();
 
     return EXIT_SUCCESS;
 }
