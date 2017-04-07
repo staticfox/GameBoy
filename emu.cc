@@ -307,10 +307,15 @@ Gameboy::loadROM(const char *const filename)
 
     char buf[16];
     memcpy(buf, &rom[0x134], 16);
+    buf[15] = '\0';
+    short padding_len = 16 - strlen(buf);
+    assert(padding_len >= 0 && padding_len <= 16);
+    char padding[padding_len];
+    memset(padding, ' ', padding_len);
 
-    std::cout << "\n@@@@@@@@@@@@@@@@@@@@\n";
-    std::cout << "@  " << buf << "  @" << std::endl;
-    std::cout << "@@@@@@@@@@@@@@@@@@@@\n\n";
+    cout << "\n@@@@@@@@@@@@@@@@@@@@\n";
+    cout << "@  " << buf << padding << "@" << endl;
+    cout << "@@@@@@@@@@@@@@@@@@@@\n\n";
 
     cout << "Platform: GameBoy";
 
