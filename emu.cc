@@ -12,6 +12,11 @@ using u32 = uint32_t;
 using i8  = int8_t;
 using i16 = int16_t;
 
+using std::cout;
+using std::cerr;
+using std::endl;
+using std::size_t;
+
 static constexpr u32 CLOCK_HZ = 4194304;
 
 enum struct CART_TYPE {
@@ -26,8 +31,8 @@ enum struct CART_TYPE {
     MBC7
 };
 
-#define PICNIC(message) do { std::cerr << __LINE__ << " " << \
-    __FUNCTION__ << " :" message << std::endl; abort(); } while(0)
+#define PICNIC(message) do { cerr << __LINE__ << " " << \
+    __FUNCTION__ << " :" message << endl; abort(); } while(0)
 
 struct Memory;
 
@@ -289,14 +294,14 @@ Gameboy::loadROM(const char *const filename)
     {
         std::ifstream romfile(filename);
         romfile.seekg(0, std::ios::end);
-        const std::size_t rom_size = romfile.tellg();
+        const size_t rom_size = romfile.tellg();
         romfile.seekg(0, std::ios::beg);
         rom.resize(rom_size);
         romfile.read(reinterpret_cast<char *>(rom.data()), rom_size);
     }
 
     if (memcmp(&rom[0x0104], logo, 48) != 0) {
-        std::cout << "Invalid ROM detected, terminating." << std::endl;
+        cout << "Invalid ROM detected, terminating." << endl;
         std::exit(EXIT_FAILURE);
     }
 
@@ -307,17 +312,17 @@ Gameboy::loadROM(const char *const filename)
     std::cout << "@  " << buf << "  @" << std::endl;
     std::cout << "@@@@@@@@@@@@@@@@@@@@\n\n";
 
-    std::cout << "Platform: GameBoy";
+    cout << "Platform: GameBoy";
 
     // If the MSB of 0x0143 is 1, then the
     // color flag is turned on
     if ((rom[0x134] >> 7)) {
-        std::cout << " Color";
+        cout << " Color";
         if (rom[0x134] == 0xc0) // Designates Color only
-            std:: cout << " (ONLY)";
+            cout << " (ONLY)";
     }
-    std::cout << " (";
-    std::cout << "0x" << std::hex << (unsigned)rom[0x134] << ")" << std::endl;
+    cout << " (";
+    cout << "0x" << std::hex << (unsigned)rom[0x134] << ")" << endl;
 
     const CART_TYPE cartType  = getCartridgeTable(rom[0x0147]);
 
@@ -326,45 +331,45 @@ Gameboy::loadROM(const char *const filename)
 
     this->cartridge.type = cartType;
     const u16 bankCount = getRomTable(rom[0x0148]);
-    std::size_t mb = bankCount * 0x4000;
+    size_t mb = bankCount * 0x4000;
     if (mb != rom.size())
         PICNIC("ERROR: ROM Size does not match file size.");
 
     const u8 ramSize   = getRamTable(rom[0x0149]);
     this->cartridge.ram.resize(ramSize * 1024);
 
-    std::cout << "Destination Code: ";
+    cout << "Destination Code: ";
     if (rom[0x014a] == 0x00)
-        std::cout << "Japanese";
+        cout << "Japanese";
     else
-        std::cout << "Non-Japanese";
-    std::cout << " (0x" << std::hex << (unsigned)rom[0x014a] << ")" << std::endl;
+        cout << "Non-Japanese";
+    cout << " (0x" << std::hex << (unsigned)rom[0x014a] << ")" << endl;
 
-    std::cout << "ROM Version: 0x" << std::hex << (unsigned)rom[0x14c] << std::endl;
+    cout << "ROM Version: 0x" << std::hex << (unsigned)rom[0x14c] << endl;
 
-    std::cout << "Checksum: ";
+    cout << "Checksum: ";
     const u8 checksumbyte = rom[0x14d];
 
     u8 x = 0;
-    for (std::size_t i = 0x0134; i < 0x014d; ++i)
+    for (size_t i = 0x0134; i < 0x014d; ++i)
         x -= (rom[i] + 1);
 
     if (x != checksumbyte) {
-        std::cout << "Failed";
+        cout << "Failed";
         exit(EXIT_FAILURE);
     } else {
-        std::cout << "Passed";
+        cout << "Passed";
     }
-    std::cout << std::endl;
+    cout << endl;
 }
 
 CART_TYPE
 Gameboy::getCartridgeTable(const u8 value)
 {
-    std::cout << "Cartridge Type: ";
-    #define t(type, size) std::cout << type <<      \
+    cout << "Cartridge Type: ";
+    #define t(type, size) cout << type <<      \
         " (0x" << std::hex << (unsigned)((u8)value) \
-        << ")" << std::endl; return size;
+        << ")" << endl; return size;
 
     switch(value) {
     case 0x00: t("ROM ONLY", CART_TYPE::ROMONLY)
@@ -400,7 +405,7 @@ Gameboy::getCartridgeTable(const u8 value)
     case 0xff: t("HuC1+RAM+BATTERY", CART_TYPE::ROMONLY)
     default: t("UNKNOWN", CART_TYPE::UNKNOWN)
     }
-    std::cout << " (0x" << std::hex << (unsigned)value << ")" << std::endl;
+    cout << " (0x" << std::hex << (unsigned)value << ")" << endl;
     #undef t
 
     return CART_TYPE::UNKNOWN;
@@ -409,10 +414,10 @@ Gameboy::getCartridgeTable(const u8 value)
 u16
 Gameboy::getRomTable(const u8 value)
 {
-    std::cout << "ROM Size: ";
-    #define t(type, size) std::cout << type <<      \
+    cout << "ROM Size: ";
+    #define t(type, size) cout << type <<      \
         " (0x" << std::hex << (unsigned)((u8)value) \
-        << ")" << std::endl; return size;
+        << ")" << endl; return size;
 
     switch(value) {
     case 0x00: t("32KByte (no ROM banking)", 0)
@@ -435,10 +440,10 @@ Gameboy::getRomTable(const u8 value)
 u8
 Gameboy::getRamTable(const u8 value)
 {
-    std::cout << "RAM Size: ";
-    #define t(type, size) std::cout << type <<         \
+    cout << "RAM Size: ";
+    #define t(type, size) cout << type <<         \
         " (0x" << std::hex << (unsigned)((u8)value) \
-        << ")" << std::endl; return size;
+        << ")" << endl; return size;
 
     switch(value) {
     case 0x00: t("None",     0)
@@ -471,10 +476,10 @@ Gameboy::incCycle(unsigned cycles)
     static u32 s_cycles;
     s_cycles += cycles;
     if (s_cycles == CLOCK_HZ) {
-        // std::cout << "one second has passed" << std::endl;
+        // cout << "one second has passed" << endl;
         s_cycles = 0;
     } else if (s_cycles > CLOCK_HZ) {
-        // std::cout << "PAST ONE SECOND?? " << std::dec << (s_cycles - CLOCK_HZ) << std::endl;
+        // cout << "PAST ONE SECOND?? " << std::dec << (s_cycles - CLOCK_HZ) << endl;
         s_cycles = 0;
     }
 }
@@ -819,12 +824,12 @@ Gameboy::execIns()
 
     // Get the next opcode
     const u8 ins = ram[PC++];
-    // std::cout << "Executing 0x" << std::hex
+    // cout << "Executing 0x" << std::hex
     //     << (unsigned)ins << "at PC 0x" << std::hex <<
     //     (unsigned)PC << " with next byte 0x" << std::hex <<
     //     (unsigned)ram[PC]     << " 0x" << std::hex <<
     //     (unsigned)ram[PC + 1] << " 0x" << std::hex <<
-    //     (unsigned)ram[PC + 2] << std::endl;
+    //     (unsigned)ram[PC + 2] << endl;
     switch (ins) {
     // LD register, value
     t(0x06, B = get8()   , 8); // store to B
@@ -1306,8 +1311,8 @@ Gameboy::execIns()
         t(0x3d, SRIGHT(L, false), 8); // Shift register L right, set MSB to 0
         t(0x3e, SRIGHT(ram[HL], false), 16); // Shift *HL right, set MSB to 0
         default:
-            std::cerr << "WARNING: Unknown opcode in CB table: 0x"
-                << std::hex << (unsigned)ins2 << std::endl;
+            cerr << "WARNING: Unknown opcode in CB table: 0x"
+                << std::hex << (unsigned)ins2 << endl;
         }
     }
 
@@ -1327,7 +1332,7 @@ int
 main(int argc, char ** argv)
 {
     if (argc < 2) {
-        std::cout << "USAGE: " << argv[0] << " game.gbc\n";
+        cout << "USAGE: " << argv[0] << " game.gbc\n";
         return EXIT_FAILURE;
     }
 
